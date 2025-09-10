@@ -196,6 +196,5 @@ def user_group_links(start_date, linked_df):
     # 4. Save the updated mapping for this month
     # -------------------------------------------------
 
-
     result_df_subset.to_csv(f"results/user_group_relation_{start_date.date()}.csv", index=False)
     return result_df_subset, result_df_with_groups

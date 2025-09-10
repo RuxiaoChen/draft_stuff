@@ -59,31 +59,29 @@ def read_region_data(selected_region, base_path):
     min_lon = region_coords['min_lon']
     max_lon = region_coords['max_lon']
 
+    combined_df = pd.read_csv(base_path)
 
-    parquet_file_path = base_path + "combined_data.parquet"
-    combined_df = pd.read_parquet(parquet_file_path, engine='pyarrow')
+    combined_df.rename(columns={'cuebiq_id': 'device_id'}, inplace=True)
+    combined_df.rename(columns={'start_lat': 'latitude_1'}, inplace=True)
+    combined_df.rename(columns={'start_lng': 'longitude_1'}, inplace=True)
+    combined_df.rename(columns={'end_lat': 'latitude_2'}, inplace=True)
+    combined_df.rename(columns={'end_lng': 'longitude_2'}, inplace=True)
+    combined_df.rename(columns={'start_geohash': 'geohash_1'}, inplace=True)
+    combined_df.rename(columns={'end_geohash': 'geohash_2'}, inplace=True)
 
-    # combined_df.rename(columns={'cuebiq_id': 'device_id'}, inplace=True)
-    # combined_df.rename(columns={'start_zone_datetime': 'utc_timestamp_1'}, inplace=True)
-    # combined_df.rename(columns={'end_zone_datetime': 'utc_timestamp_2'}, inplace=True)
-    # combined_df.rename(columns={'start_lat': 'latitude_1'}, inplace=True)
-    # combined_df.rename(columns={'start_lng': 'longitude_1'}, inplace=True)
-    # combined_df.rename(columns={'end_lat': 'latitude_2'}, inplace=True)
-    # combined_df.rename(columns={'end_lng': 'longitude_2'}, inplace=True)
-    # combined_df.rename(columns={'start_geohash': 'geohash_1'}, inplace=True)
-    # combined_df.rename(columns={'end_geohash': 'geohash_2'}, inplace=True)
+    # combined_df.rename(columns={'start_zoned_datetime': 'utc_timestamp_1'}, inplace=True)
+    # combined_df.rename(columns={'end_zoned_datetime': 'utc_timestamp_2'}, inplace=True)
 
+    filtered_df = apply_residency_filter(combined_df, min_lat, max_lat, min_lon, max_lon)
 
     # Filter rows based on the bounding box
     # filtered_df = combined_df[
-    #     (combined_df["latitude_2"] >= min_lat) & (combined_df["latitude_2"] <= max_lat) |
+    #     (combined_df["latitude_2"] >= min_lat) & (combined_df["latitude_2"] <= max_lat) &
     #     (combined_df["longitude_2"] >= min_lon) & (combined_df["longitude_2"] <= max_lon)
     # ]
 
-    filtered_df = apply_residency_filter(combined_df, min_lat, max_lat, min_lon, max_lon)
-    print(f"Original DataFrame shape: {combined_df.shape}")
-    print(f"Filtered DataFrame shape: {filtered_df.shape}")
-    print(f"Filtered {combined_df.shape[0] - filtered_df.shape[0]} rows")
+    print(f"Original DataFrame shape: {filtered_df.shape}")
+
 
     geohash_1_list = []
     geohash_2_list = []
@@ -116,15 +114,21 @@ def read_region_data(selected_region, base_path):
     
     filtered_df = filtered_df[columns_to_keep]
 
-    # Create unix_time columns (adding offset to timestamps)
-    filtered_df['unix_time_1'] = filtered_df['utc_timestamp_1']
-    filtered_df['unix_time_2'] = filtered_df['utc_timestamp_2']
-    # Generate human-readable timestamps
-    def unix_to_mdy_hms(unix_time):
-        return datetime.fromtimestamp(unix_time).strftime('%m/%d/%Y %H:%M:%S')
+    # # Create unix_time columns (adding offset to timestamps)
+    # filtered_df['unix_time_1'] = filtered_df['utc_timestamp_1']
+    # filtered_df['unix_time_2'] = filtered_df['utc_timestamp_2']
+    # # Generate human-readable timestamps
+    # def unix_to_mdy_hms(unix_time):
+    #     return datetime.fromtimestamp(unix_time).strftime('%m/%d/%Y %H:%M:%S')
+    # filtered_df['timestamp_1'] = filtered_df['unix_time_1'].apply(unix_to_mdy_hms)
+    # filtered_df['timestamp_2'] = filtered_df['unix_time_2'].apply(unix_to_mdy_hms)
 
-    filtered_df['timestamp_1'] = filtered_df['unix_time_1'].apply(unix_to_mdy_hms)
-    filtered_df['timestamp_2'] = filtered_df['unix_time_2'].apply(unix_to_mdy_hms)
+    def iso8601_to_mdy_hms(iso_str):
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime('%m/%d/%Y %H:%M:%S')
+
+    filtered_df['timestamp_1'] = filtered_df['start_zoned_datetime'].apply(iso8601_to_mdy_hms)
+    filtered_df['timestamp_2'] = filtered_df['end_zoned_datetime'].apply(iso8601_to_mdy_hms)
 
     # Add original_device_id column (ground truth)
     filtered_df['original_device_id'] = filtered_df['device_id']
@@ -133,11 +137,9 @@ def read_region_data(selected_region, base_path):
     filtered_df['datetime_1'] = pd.to_datetime(filtered_df['timestamp_1'])
     filtered_df['date_1'] = filtered_df['datetime_1'].dt.date
 
-
     # Get the total number of unique device_ids
     all_device_ids = filtered_df['device_id'].unique()
     total_device_ids = len(all_device_ids)
-    print(len(filtered_df))
     return filtered_df, min_lat, max_lat, min_lon, max_lon
 
 def link_device_trajectories_optimized(df, max_time_gap_seconds=3600, geohash_digit_tolerance=8):
@@ -308,6 +310,14 @@ def link_device_trajectories_optimized(df, max_time_gap_seconds=3600, geohash_di
 
 
 def apply_residency_filter(df, min_lat, max_lat, min_lon, max_lon):
+
+    # in_box = (
+    #     df['latitude_2'].between(min_lat, max_lat) &
+    #     df['longitude_2'].between(min_lon, max_lon)
+    # )
+    # total_counts   = df['device_id'].value_counts()
+    # in_box_counts  = df[in_box]['device_id'].value_counts()
+
 
     # Check which start points (latitude_1, longitude_1) are in the box
     start_points_in_box = (

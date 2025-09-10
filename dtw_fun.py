@@ -63,6 +63,7 @@ def dtw_compute(result_df_with_groups,start_time, end_time):
     # -------------------------------------------------
     checkins['timestamp'] = pd.to_datetime(checkins['timestamp'])
     active_mask = checkins.groupby('user_id')['user_id'].transform('size') >= min_trj_len
+    print('Number of active users:', len(checkins[active_mask]))
     checkins = checkins.loc[active_mask].copy()
 
     # —— 1.1  Map PoI to index & coordinates —— #
@@ -200,13 +201,12 @@ def dtw_compute(result_df_with_groups,start_time, end_time):
     all_costs = np.array(candidate_costs, dtype=np.float32)
 
 
-    # 15% of the data will be positive
-    desired_ratio=0.3
+    # 20% of the data will be positive
+    desired_ratio=0.2
     # Sort the cost value
     sorted_costs = np.sort(all_costs)
     # Calculate place of the desired threshold
     threshold_index = int(len(sorted_costs) * desired_ratio)
-    print(threshold_index)
     fixed_threshold = sorted_costs[threshold_index]
     print(f"Threshold selected: {fixed_threshold}")
 
