@@ -16,11 +16,33 @@ def filter_network_eadm(df_dtw_results, linked_df, start_date):
 
     # EADM Backbone Extraction Method
     time_graph = graph_df[['user_u', 'user_v']]
-    time_alldf = linked_df[['device_id', 'latitude_2', 'longitude_2', 'geohash_2', 'timestamp_2']]
 
+    df1 = linked_df[['device_id', 'latitude_1', 'longitude_1', 'geohash_1', 'timestamp_1']].rename(
+        columns={
+            'latitude_1': 'latitude',
+            'longitude_1': 'longitude',
+            'geohash_1': 'geohash',
+            'timestamp_1': 'timestamp'
+        }
+    )
+    df2 = linked_df[['device_id', 'latitude_2', 'longitude_2', 'geohash_2', 'timestamp_2']].rename(
+        columns={
+            'latitude_2': 'latitude',
+            'longitude_2': 'longitude',
+            'geohash_2': 'geohash',
+            'timestamp_2': 'timestamp'
+        }
+    )
+
+    time_alldf = pd.concat([df1, df2], ignore_index=True).dropna(subset=['latitude', 'longitude', 'timestamp'])
+    time_alldf["timestamp"] = pd.to_datetime(time_alldf["timestamp"])
+    time_alldf["hour_bin"] = time_alldf["timestamp"].dt.floor("H")
+
+    
+    # time_alldf = linked_df[['device_id', 'latitude_2', 'longitude_2', 'geohash_2', 'timestamp_2']]
     # ---------- Preprocessing ----------
-    time_alldf["timestamp_2"] = pd.to_datetime(time_alldf["timestamp_2"])
-    time_alldf["hour_bin"] = time_alldf["timestamp_2"].dt.floor("H")
+    # time_alldf["timestamp_2"] = pd.to_datetime(time_alldf["timestamp_2"])
+    # time_alldf["hour_bin"] = time_alldf["timestamp_2"].dt.floor("H")
 
     ids_in_graph = set(time_graph["user_u"]) | set(time_graph["user_v"])
     loc_sub = time_alldf[time_alldf["device_id"].isin(ids_in_graph)]
@@ -28,19 +50,19 @@ def filter_network_eadm(df_dtw_results, linked_df, start_date):
     # For the same (geohash, hour, device), keep only the earliest time → avoid multiple rows per person
     loc_sub = (
         loc_sub
-        .groupby(["geohash_2", "hour_bin", "device_id"], as_index=False)
-        ["timestamp_2"].min()
+        .groupby(["geohash", "hour_bin", "device_id"], as_index=False)
+        ["timestamp"].min()
     )
 
     edge_set = {tuple(sorted(x)) for x in time_graph[["user_u", "user_v"]].to_numpy()}
 
     # ---------- Scanning ----------
     records = []
-    grouped = loc_sub.groupby(["geohash_2", "hour_bin"], sort=False)
+    grouped = loc_sub.groupby(["geohash", "hour_bin"], sort=False)
 
     for (gh, hr), grp in tqdm(grouped, total=len(grouped), desc="Scanning groups"):
         ids = grp["device_id"].tolist()
-        ts = dict(zip(ids, grp["timestamp_2"]))        # Used to access timestamp
+        ts = dict(zip(ids, grp["timestamp"]))        # Used to access timestamp
         # Pairwise combinations within the group, much fewer than total number of edges
         for u, v in itertools.combinations(ids, 2):
             pair = tuple(sorted((u, v)))

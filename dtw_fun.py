@@ -27,13 +27,23 @@ from numba import njit
 
 
 
-def dtw_compute(result_df_with_groups,start_time, end_time):
-    renamed_df = result_df_with_groups.rename(columns={
-    'device_id': 'user_id',
-    'timestamp_2': 'timestamp',
-    'latitude_2': 'lat',
-    'longitude_2': 'lon'
+def dtw_compute(result_df_with_groups,start_time, end_time, min_trj_len = 20):
+    df1 = result_df_with_groups[['device_id', 'timestamp_1', 'latitude_1', 'longitude_1']].rename(columns={
+        'device_id': 'user_id',
+        'timestamp_1': 'timestamp',
+        'latitude_1': 'lat',
+        'longitude_1': 'lon'
     })
+
+    df2 = result_df_with_groups[['device_id', 'timestamp_2', 'latitude_2', 'longitude_2']].rename(columns={
+        'device_id': 'user_id',
+        'timestamp_2': 'timestamp',
+        'latitude_2': 'lat',
+        'longitude_2': 'lon'
+    })
+
+    renamed_df = pd.concat([df1, df2], ignore_index=True).dropna(subset=['lat', 'lon', 'timestamp'])
+
 
     # 2. Convert the timestamp to the Gowalla-like format: YYYY-MM-DDTHH:MM:SSZ
     renamed_df['timestamp'] = pd.to_datetime(renamed_df['timestamp'])
@@ -54,7 +64,6 @@ def dtw_compute(result_df_with_groups,start_time, end_time):
     # -------------------------------------------------
     # 0. Parameters
     # -------------------------------------------------
-    min_trj_len = 90         # A user must have at least N check-ins to be considered active
     topk        = 3           # Take the k smallest DTW values
     radius      = 2           # Fast dtw allows ±2 steps of alignment shift. Set this value to bigger one will increase runningtime. Original DTW doesn't have this constraint.
 
@@ -248,6 +257,9 @@ def dtw_compute(result_df_with_groups,start_time, end_time):
     # ---------------------------
 
     # Filter Holiday records
+    if not pd.api.types.is_datetime64_any_dtype(result_df_with_groups['timestamp_2']):
+        result_df_with_groups['timestamp_2'] = pd.to_datetime(result_df_with_groups['timestamp_2'])
+        result_df_with_groups['timestamp_2'] = result_df_with_groups['timestamp_2'].dt.tz_localize(None)
     holiday_df = result_df_with_groups[(result_df_with_groups['timestamp_2'] >= start_time) & (result_df_with_groups['timestamp_2'] < end_time)]
     print("Records during holiday:", len(holiday_df))
 
@@ -294,6 +306,8 @@ def dtw_compute(result_df_with_groups,start_time, end_time):
     df_dtw_results.to_csv("results/Individual_social_network.csv", index=False)
     print("DTW Prediction details saved to Individual_social_network.csv")
     return df_dtw_results
+
+
 
     # ============ (Optional) Plot the relationship between threshold and number of predictions ============
     # # Generate a series of thresholds covering the score range

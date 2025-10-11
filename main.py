@@ -16,7 +16,7 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # Data path
-base_path = 'Lee_county/202208.csv'
+base_path = 'toy_datasets/'
 
 # Define the starting month of the whole project. 2022-08-01 to 2023-07-31
 # original_date=datetime(2022, 8, 1)
@@ -45,7 +45,7 @@ filtered_df, min_lat, max_lat, min_lon, max_lon=read_region_data(selected_region
 2. Filter local resident and residents with minimmun appearance in month
 '''
 
-linked_df = apply_residency_filter_appear(filtered_df, min_appearances=30)
+linked_df = apply_residency_filter_appear(filtered_df, min_appearances=20)
 
 
 '''
@@ -56,8 +56,7 @@ user_group_df, result_df_with_group=user_group_links(start_date, linked_df)
 '''
 4. Identify Social Links using DTW
 '''
-df_dtw_results=dtw_compute(result_df_with_group,start_time, end_time)
-
+df_dtw_results=dtw_compute(result_df_with_group, start_time, end_time, min_trj_len = 300)
 '''
 5. Network Filtering
 '''

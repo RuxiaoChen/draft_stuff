@@ -9,7 +9,7 @@ def build_group_network(graph_df, result_df_subset, start_date):
     # Keep only user pairs predicted as connected, and extract user_u, user_v, and connection type columns
     individual_links = graph_df[['user_u', 'user_v', 'connection type']].values.tolist()
     print("Total individual links (predicted connected):", len(individual_links))
-    print(individual_links)
+    # print(individual_links)
     # --------------------------
     # 2. Build a mapping from device to group (group geohash)
     # Assume result_df_subset contains columns device_id and group_geohash_8
@@ -72,10 +72,10 @@ def build_group_network(graph_df, result_df_subset, start_date):
     # --------------------------
     # Output results
     # --------------------------
-    print('How many devices are there in each group:')
-    print(group_device_count)
-    print("group candidate pairs:")
-    print(group_candidate_pair)
+    # print('How many devices are there in each group:')
+    # print(group_device_count)
+    # print("group candidate pairs:")
+    # print(group_candidate_pair)
 
 
     group_edges['group_1_number'] = group_edges['group_1'].map(group_device_count)
