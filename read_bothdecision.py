@@ -42,24 +42,14 @@ def load_decision_data():
     return decision_df
 
 
-# ==========================================================
-# 2. Load monthly social network files
-# ==========================================================
 def load_network_files(folder='results'):
-    files = sorted(glob.glob(os.path.join(folder, 'lee_county_20*.csv')))
+    files = sorted(glob.glob(os.path.join(folder, 'Group_social_network_*.csv')))
     network_dict = {}
-
     for f in files:
-        match = re.search(r'lee_county_(\d{6})', os.path.basename(f))
-        if not match:
-            continue
-        date_str = match.group(1)  # e.g. '202208'
-        year = int(date_str[:4])
-        month = int(date_str[4:])
-        date_obj = pd.Timestamp(year=year, month=month, day=1)
-
-        df = pd.read_csv(f, dtype={'group_1': str, 'group_2': str, 'type': int})
-        network_dict[date_obj] = df[['group_1', 'group_2', 'type']]
+        date = pd.to_datetime(f.split('_')[-1].split('.')[0])  # 从文件名提取日期
+        df = pd.read_csv(f)
+        df = df[['group_1', 'group_2', 'type']]
+        network_dict[date] = df
     return network_dict
 
 
