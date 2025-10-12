@@ -17,14 +17,31 @@ import os
 import re
 
 # ==========================================================
-# 1. Load repair/sales decision data and add geohash8
+# 1. Load repair/sales decision data and add geohash8 (with bbox filter)
 # ==========================================================
-def load_decision_data():
+def load_decision_data(bbox=(-82.0, 26.48, -81.92, 26.52)):
+    minx, miny, maxx, maxy = bbox
+
     repair = pd.read_csv('decision_data/repair_coords_mapped_to_sales.csv', parse_dates=['record_date'])
     sales = pd.read_csv('decision_data/sales_data_all.csv', parse_dates=['first_sale_in_period'], dayfirst=False, infer_datetime_format=True)
 
-    repair['geohash8'] = repair.apply(lambda r: geohash.encode(r['original_lat'], r['original_lon'], precision=8), axis=1)
-    sales['geohash8'] = sales.apply(lambda r: geohash.encode(r['lat'], r['lon'], precision=8), axis=1)
+    # -------- bbox filter --------
+    repair = repair[
+        (repair['original_lon'] >= minx) & (repair['original_lon'] <= maxx) &
+        (repair['original_lat'] >= miny) & (repair['original_lat'] <= maxy)
+    ]
+    sales = sales[
+        (sales['lon'] >= minx) & (sales['lon'] <= maxx) &
+        (sales['lat'] >= miny) & (sales['lat'] <= maxy)
+    ]
+
+    # -------- encode geohash8 --------
+    repair['geohash8'] = repair.apply(
+        lambda r: geohash.encode(r['original_lat'], r['original_lon'], precision=8), axis=1
+    )
+    sales['geohash8'] = sales.apply(
+        lambda r: geohash.encode(r['lat'], r['lon'], precision=8), axis=1
+    )
 
     repair = repair[['geohash8', 'record_date']].rename(columns={'record_date': 'decision_date'})
     sales = sales[['geohash8', 'first_sale_in_period']].rename(columns={'first_sale_in_period': 'decision_date'})
@@ -37,21 +54,44 @@ def load_decision_data():
     decision_df['decision_date'] = pd.to_datetime(
         decision_df['decision_date'], errors='coerce', infer_datetime_format=True
     )
-
     decision_df = decision_df.dropna(subset=['decision_date'])
+
+    print(f"[INFO] Filtered decision data: {len(decision_df)} records within bbox {bbox}")
     return decision_df
 
 
-def load_network_files(folder='results'):
+# ==========================================================
+# 2. Load multiple monthly household social networks (with bbox filter)
+# ==========================================================
+def load_network_files(folder='social_network', bbox=(-82.0, 26.48, -81.92, 26.52)):
+    minx, miny, maxx, maxy = bbox
+
     files = sorted(glob.glob(os.path.join(folder, 'Group_social_network_*.csv')))
     network_dict = {}
+
     for f in files:
-        date = pd.to_datetime(f.split('_')[-1].split('.')[0])  # 从文件名提取日期
-        df = pd.read_csv(f)
+        date = pd.to_datetime(f.split('_')[-1].split('.')[0])  # extract date
+        df = pd.read_csv(f)[['group_1', 'group_2', 'type']]
+
+        # decode geohash to (lat, lon) for both groups
+        df['g1_lat'], df['g1_lon'] = zip(*df['group_1'].map(geohash.decode))
+        df['g2_lat'], df['g2_lon'] = zip(*df['group_2'].map(geohash.decode))
+
+        # bbox filtering: keep only pairs where both groups are inside the bounding box
+        df = df[
+            (df['g1_lon'] >= minx) & (df['g1_lon'] <= maxx) &
+            (df['g1_lat'] >= miny) & (df['g1_lat'] <= maxy) &
+            (df['g2_lon'] >= minx) & (df['g2_lon'] <= maxx) &
+            (df['g2_lat'] >= miny) & (df['g2_lat'] <= maxy)
+        ]
+
+        # remove temporary lat/lon columns
         df = df[['group_1', 'group_2', 'type']]
         network_dict[date] = df
-    return network_dict
 
+        print(f"[INFO] {f}: {len(df)} edges kept within bbox {bbox}")
+
+    return network_dict
 
 # ==========================================================
 # 3. Analyze diffusion effect: decision → neighbor decision lag
