@@ -59,10 +59,9 @@ def read_region_data(selected_region, base_path):
     min_lon = region_coords['min_lon']
     max_lon = region_coords['max_lon']
 
-    # combined_df = pd.read_csv(base_path)
+    combined_df = pd.read_csv(base_path)
 
-    parquet_file_path = base_path + "combined_data.parquet"
-    combined_df = pd.read_parquet(parquet_file_path, engine='pyarrow')
+
 
     combined_df.rename(columns={'cuebiq_id': 'device_id'}, inplace=True)
     combined_df.rename(columns={'start_lat': 'latitude_1'}, inplace=True)
@@ -116,17 +115,17 @@ def read_region_data(selected_region, base_path):
     filtered_df['unix_time_1'] = filtered_df['utc_timestamp_1']
     filtered_df['unix_time_2'] = filtered_df['utc_timestamp_2']
     # Generate human-readable timestamps
-    def unix_to_mdy_hms(unix_time):
-        return datetime.fromtimestamp(unix_time).strftime('%m/%d/%Y %H:%M:%S')
-    filtered_df['timestamp_1'] = filtered_df['unix_time_1'].apply(unix_to_mdy_hms)
-    filtered_df['timestamp_2'] = filtered_df['unix_time_2'].apply(unix_to_mdy_hms)
+    # def unix_to_mdy_hms(unix_time):
+    #     return datetime.fromtimestamp(unix_time).strftime('%m/%d/%Y %H:%M:%S')
+    # filtered_df['timestamp_1'] = filtered_df['unix_time_1'].apply(unix_to_mdy_hms)
+    # filtered_df['timestamp_2'] = filtered_df['unix_time_2'].apply(unix_to_mdy_hms)
 
-    # def iso8601_to_mdy_hms(iso_str):
-    #     dt = datetime.fromisoformat(iso_str)
-        # return dt.strftime('%m/%d/%Y %H:%M:%S')
+    def iso8601_to_mdy_hms(iso_str):
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime('%m/%d/%Y %H:%M:%S')
 
-    # filtered_df['timestamp_1'] = filtered_df['utc_timestamp_1'].apply(iso8601_to_mdy_hms)
-    # filtered_df['timestamp_2'] = filtered_df['utc_timestamp_2'].apply(iso8601_to_mdy_hms)
+    filtered_df['timestamp_1'] = filtered_df['utc_timestamp_1'].apply(iso8601_to_mdy_hms)
+    filtered_df['timestamp_2'] = filtered_df['utc_timestamp_2'].apply(iso8601_to_mdy_hms)
 
     # Add original_device_id column (ground truth)
     filtered_df['original_device_id'] = filtered_df['device_id']

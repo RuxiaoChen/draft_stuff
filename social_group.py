@@ -176,6 +176,8 @@ def user_group_links(start_date, linked_df):
         # -------------------------------------------------
         # 1. Merge current and previous GeoHashes by device_id
         # -------------------------------------------------
+        result_df_subset['device_id'] = result_df_subset['device_id'].astype(int)
+        prev_df['device_id'] = prev_df['device_id'].astype(int)
         merged = result_df_subset.merge(prev_df, on='device_id', how='left')
 
         # -------------------------------------------------
