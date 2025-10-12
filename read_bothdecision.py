@@ -14,9 +14,10 @@ import glob
 import geohash
 from dateutil.relativedelta import relativedelta
 import os
+import re
 
 # ==========================================================
-# 1. 加载 repair / sales decision 数据并加上 geohash8
+# 1. Load repair/sales decision data and add geohash8
 # ==========================================================
 def load_decision_data():
     repair = pd.read_csv('decision_data/repair_coords_mapped_to_sales.csv', parse_dates=['record_date'])
@@ -34,7 +35,7 @@ def load_decision_data():
     decision_df = pd.concat([repair, sales], ignore_index=True)
     decision_df = decision_df.dropna(subset=['decision_date'])
     decision_df['decision_date'] = pd.to_datetime(
-    decision_df['decision_date'], errors='coerce', infer_datetime_format=True
+        decision_df['decision_date'], errors='coerce', infer_datetime_format=True
     )
 
     decision_df = decision_df.dropna(subset=['decision_date'])
@@ -42,50 +43,56 @@ def load_decision_data():
 
 
 # ==========================================================
-# 2. 载入多个月的 household social network
-#    文件命名如：results/Group_social_network_2023-04-01.csv
+# 2. Load monthly social network files
 # ==========================================================
-def load_network_files(folder='social_network'):
-    files = sorted(glob.glob(os.path.join(folder, 'Group_social_network_*.csv')))
+def load_network_files(folder='results'):
+    files = sorted(glob.glob(os.path.join(folder, 'lee_county_20*.csv')))
     network_dict = {}
+
     for f in files:
-        date = pd.to_datetime(f.split('_')[-1].split('.')[0])  # 从文件名提取日期
-        df = pd.read_csv(f)
-        df = df[['group_1', 'group_2', 'type']]
-        network_dict[date] = df
+        match = re.search(r'lee_county_(\d{6})', os.path.basename(f))
+        if not match:
+            continue
+        date_str = match.group(1)  # e.g. '202208'
+        year = int(date_str[:4])
+        month = int(date_str[4:])
+        date_obj = pd.Timestamp(year=year, month=month, day=1)
+
+        df = pd.read_csv(f, dtype={'group_1': str, 'group_2': str, 'type': int})
+        network_dict[date_obj] = df[['group_1', 'group_2', 'type']]
     return network_dict
 
 
 # ==========================================================
-# 3. 分析扩散效应：decision → neighbor decision lag
+# 3. Analyze diffusion effect: decision → neighbor decision lag
 # ==========================================================
 def analyze_diffusion(decision_df, network_dict, month_window=3):
     """
-    month_window: 观察后续多少个月的邻居决策
+    month_window: how many following months to observe neighbor decisions
     """
     records = []
 
-    # 按时间顺序遍历每个月的网络
+    # Iterate through each monthly network in chronological order
     for net_date, net_df in network_dict.items():
         next_month = net_date + relativedelta(months=month_window)
 
-        # 当前时间点前的所有decision
+        # All decisions made before the current month
         past_decisions = decision_df[decision_df['decision_date'] <= net_date]
 
-        # 在观察窗口内发生的decision
+        # Decisions that occurred within the observation window
         future_decisions = decision_df[
             (decision_df['decision_date'] > net_date) &
             (decision_df['decision_date'] <= next_month)
         ]
 
-        # 建立邻居映射
+        # Build neighbor mapping
         neighbor_map = {}
         for _, row in net_df.iterrows():
             a, b = row['group_1'], row['group_2']
             neighbor_map.setdefault(a, set()).add(b)
             neighbor_map.setdefault(b, set()).add(a)
 
-        # 遍历每个过去的decision，看看邻居未来是否跟进
+        # For each past decision, check if neighbors followed in the future
         for _, row in past_decisions.iterrows():
             household = row['geohash8']
             dtype = row['decision_type']
@@ -95,7 +102,7 @@ def analyze_diffusion(decision_df, network_dict, month_window=3):
                 continue
 
             neighbors = neighbor_map[household]
-            # 看未来窗口内是否有邻居做了相同 decision
+            # Check if any neighbor made the same decision within the window
             neighbors_future = future_decisions[
                 (future_decisions['geohash8'].isin(neighbors)) &
                 (future_decisions['decision_type'] == dtype)
@@ -115,15 +122,3 @@ def analyze_diffusion(decision_df, network_dict, month_window=3):
     return result
 
 
-# ==========================================================
-# 4. 主程序
-# ==========================================================
-if __name__ == '__main__':
-    decision_df = load_decision_data()
-    network_dict = load_network_files('social_network')
-    pdb.set_trace()
-    result_df = analyze_diffusion(decision_df, network_dict, month_window=3)
-
-    result_df.to_csv('results/household_diffusion_analysis.csv', index=False)
-    print(result_df.head())
-    print("共发现邻居扩散事件数量:", len(result_df))
