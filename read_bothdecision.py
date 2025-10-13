@@ -1,18 +1,11 @@
 import pandas as pd
 import geohash
 import pdb
-
-
-import pandas as pd
+import numpy as np
 import glob
-import geohash
 from dateutil.relativedelta import relativedelta
 import os
-import re
-
-import pandas as pd
-import geohash
-import glob, os, numpy as np
+import networkx as nx
 
 
 def load_decision_data(bbox=(-82.0, 26.48, -81.92, 26.52)):
@@ -130,85 +123,53 @@ def load_network_files(folder='social_network', bbox=(-82.0, 26.48, -81.92, 26.5
     return network_dict
 
 
-from dateutil.relativedelta import relativedelta
-import pandas as pd
-
-def analyze_diffusion(decision_df, network_dict, exposure_window=1, follow_window=3):
+def analyze_decision_network_strength(decision_df, network_dict, month_window=1):
 
     records = []
 
 
-    decision_df = decision_df.sort_values("decision_date")
+    for date, net_df in network_dict.items():
 
-    for net_date, net_df in network_dict.items():
+        G = nx.Graph()
+        for _, r in net_df.iterrows():
+            G.add_edge(r['group_1'], r['group_2'], weight=1, type=r['type'])
 
-        neighbor_map = {}
-        for _, row in net_df.iterrows():
-            a, b, conn_type = row["group_1"], row["group_2"], row["type"]
-            neighbor_map.setdefault(a, []).append((b, conn_type))
-            neighbor_map.setdefault(b, []).append((a, conn_type))
 
-        exposure_start = net_date - relativedelta(months=exposure_window)
-        follow_end = net_date + relativedelta(months=follow_window)
-
-        recent_decisions = decision_df[
-            (decision_df["decision_date"] >= exposure_start) &
-            (decision_df["decision_date"] <= net_date)
+        month_start = pd.Timestamp(date)
+        month_end = month_start + pd.DateOffset(months=month_window)
+        current_decisions = decision_df[
+            (decision_df['decision_date'] >= month_start) &
+            (decision_df['decision_date'] < month_end)
         ]
 
+        decided_nodes = set(current_decisions['geohash8'])
+        all_nodes = set(G.nodes())
 
-        future_decisions = decision_df[
-            (decision_df["decision_date"] > net_date) &
-            (decision_df["decision_date"] <= follow_end)
-        ]
+        non_decided_nodes = all_nodes - decided_nodes
+        if not decided_nodes or not non_decided_nodes:
+            continue
 
-        all_households = set(decision_df["geohash8"])
-        decision_types = decision_df["decision_type"].unique()
+        deg = dict(G.degree())
+        avg_neighbor_degree = nx.average_neighbor_degree(G)
+        betw = nx.betweenness_centrality(G, normalized=True)
 
-        for h in all_households:
-            if h not in neighbor_map:
-                continue
-            neighbors = [n for n, _ in neighbor_map[h]]
-            conn_types = [t for _, t in neighbor_map[h]]
+        def summarize(nodes, label):
+            sub = [n for n in nodes if n in deg]
+            if not sub:
+                return None
+            return {
+                'date': date,
+                'group': label,
+                'n_households': len(sub),
+                'avg_degree': np.mean([deg[n] for n in sub]),
+                'avg_neighbor_degree': np.mean([avg_neighbor_degree[n] for n in sub]),
+                'avg_betweenness': np.mean([betw[n] for n in sub]),
+                'density': nx.density(G.subgraph(sub)) if len(sub) > 1 else 0
+            }
 
-            for dtype in decision_types:
+        records.append(summarize(decided_nodes, 'decided'))
+        records.append(summarize(non_decided_nodes, 'non_decided'))
 
-                exposed_neighbors = recent_decisions[
-                    (recent_decisions["geohash8"].isin(neighbors)) &
-                    (recent_decisions["decision_type"] == dtype)
-                ]
-                exposed = len(exposed_neighbors) > 0
-
-                followed = len(future_decisions[
-                    (future_decisions["geohash8"] == h) &
-                    (future_decisions["decision_type"] == dtype)
-                ]) > 0
-
-                if exposed or followed: 
-                    records.append({
-                        "network_date": net_date,
-                        "household": h,
-                        "decision_type": dtype,
-                        "exposed": int(exposed),
-                        "followed": int(followed),
-                        "num_exposed_neighbors": len(exposed_neighbors),
-                        "num_total_neighbors": len(neighbors),
-                        "num_bonding": conn_types.count(1),
-                        "num_bridging": conn_types.count(0)
-                    })
-
-    df = pd.DataFrame(records)
-    if df.empty:
-        return df
-
-    summary = (
-        df.groupby(["decision_type", "network_date", "exposed"])
-          .followed.mean()
-          .reset_index()
-          .pivot(index=["network_date", "decision_type"], columns="exposed", values="followed")
-          .rename(columns={0: "P_follow_no_exposure", 1: "P_follow_exposure"})
-          .reset_index()
-    )
-    summary["diffusion_effect"] = summary["P_follow_exposure"] - summary["P_follow_no_exposure"]
-
-    return df, summary
+    result = pd.DataFrame([r for r in records if r])
+    print(result.groupby('group')[['avg_degree', 'avg_neighbor_degree', 'avg_betweenness', 'density']].mean())
+    return result
