@@ -2,13 +2,7 @@ import pandas as pd
 import geohash
 import pdb
 
-# repair_df['geohash8'] = repair_df.apply(
-#     lambda row: geohash.encode(row['original_lat'], row['original_lon'], precision=8), axis=1
-# )
 
-# sales_df['geohash8'] = sales_df.apply(
-#     lambda row: geohash.encode(row['lat'], row['lon'], precision=8), axis=1
-# )
 import pandas as pd
 import glob
 import geohash
@@ -93,62 +87,93 @@ def load_network_files(folder='social_network', bbox=(-82.0, 26.48, -81.92, 26.5
 
     return network_dict
 
-# ==========================================================
-# 3. Analyze diffusion effect: decision → neighbor decision lag
-# ==========================================================
-def analyze_diffusion(decision_df, network_dict, month_window=3):
+from dateutil.relativedelta import relativedelta
+import pandas as pd
+
+def analyze_diffusion(decision_df, network_dict, exposure_window=1, follow_window=3):
     """
-    month_window: how many following months to observe neighbor decisions
+    exposure_window: 月份，邻居决策提前多久算暴露
+    follow_window: 月份，暴露后观察多久看被影响者是否决策
     """
     records = []
 
-    # Iterate through each monthly network in chronological order
+    # 将决策表按时间排序
+    decision_df = decision_df.sort_values("decision_date")
+
     for net_date, net_df in network_dict.items():
-        next_month = net_date + relativedelta(months=month_window)
-
-        # All decisions made before the current month
-        past_decisions = decision_df[decision_df['decision_date'] <= net_date]
-
-        # Decisions that occurred within the observation window
-        future_decisions = decision_df[
-            (decision_df['decision_date'] > net_date) &
-            (decision_df['decision_date'] <= next_month)
-        ]
-
-        # Build neighbor mapping
+        # 当前月的网络
         neighbor_map = {}
         for _, row in net_df.iterrows():
-            a, b = row['group_1'], row['group_2']
-            neighbor_map.setdefault(a, set()).add(b)
-            neighbor_map.setdefault(b, set()).add(a)
+            a, b, conn_type = row["group_1"], row["group_2"], row["type"]
+            neighbor_map.setdefault(a, []).append((b, conn_type))
+            neighbor_map.setdefault(b, []).append((a, conn_type))
 
-        # For each past decision, check if neighbors followed in the future
-        for _, row in past_decisions.iterrows():
-            household = row['geohash8']
-            dtype = row['decision_type']
-            decision_time = row['decision_date']
+        # 时间窗口
+        exposure_start = net_date - relativedelta(months=exposure_window)
+        follow_end = net_date + relativedelta(months=follow_window)
 
-            if household not in neighbor_map:
+        # exposure 窗口内已经决策的 households
+        recent_decisions = decision_df[
+            (decision_df["decision_date"] >= exposure_start) &
+            (decision_df["decision_date"] <= net_date)
+        ]
+
+        # 观察窗口内的 households
+        future_decisions = decision_df[
+            (decision_df["decision_date"] > net_date) &
+            (decision_df["decision_date"] <= follow_end)
+        ]
+
+        all_households = set(decision_df["geohash8"])
+        decision_types = decision_df["decision_type"].unique()
+
+        # 遍历每个 household 作为潜在被影响者
+        for h in all_households:
+            if h not in neighbor_map:
                 continue
+            neighbors = [n for n, _ in neighbor_map[h]]
+            conn_types = [t for _, t in neighbor_map[h]]
 
-            neighbors = neighbor_map[household]
-            # Check if any neighbor made the same decision within the window
-            neighbors_future = future_decisions[
-                (future_decisions['geohash8'].isin(neighbors)) &
-                (future_decisions['decision_type'] == dtype)
-            ]
+            for dtype in decision_types:
+                # 暴露：邻居在过去 exposure_window 内做出同类决策
+                exposed_neighbors = recent_decisions[
+                    (recent_decisions["geohash8"].isin(neighbors)) &
+                    (recent_decisions["decision_type"] == dtype)
+                ]
+                exposed = len(exposed_neighbors) > 0
 
-            if len(neighbors_future) > 0:
-                records.append({
-                    'anchor_household': household,
-                    'decision_type': dtype,
-                    'anchor_date': decision_time,
-                    'network_date': net_date,
-                    'num_neighbors_followed': len(neighbors_future),
-                    'window_months': month_window
-                })
+                # 被影响：该 household 在 follow_window 内做出相同决策
+                followed = len(future_decisions[
+                    (future_decisions["geohash8"] == h) &
+                    (future_decisions["decision_type"] == dtype)
+                ]) > 0
 
-    result = pd.DataFrame(records)
-    return result
+                if exposed or followed:  # 节省存储
+                    records.append({
+                        "network_date": net_date,
+                        "household": h,
+                        "decision_type": dtype,
+                        "exposed": int(exposed),
+                        "followed": int(followed),
+                        "num_exposed_neighbors": len(exposed_neighbors),
+                        "num_total_neighbors": len(neighbors),
+                        "num_bonding": conn_types.count(1),
+                        "num_bridging": conn_types.count(0)
+                    })
 
+    df = pd.DataFrame(records)
+    if df.empty:
+        return df
 
+    # 汇总统计
+    summary = (
+        df.groupby(["decision_type", "network_date", "exposed"])
+          .followed.mean()
+          .reset_index()
+          .pivot(index=["network_date", "decision_type"], columns="exposed", values="followed")
+          .rename(columns={0: "P_follow_no_exposure", 1: "P_follow_exposure"})
+          .reset_index()
+    )
+    summary["diffusion_effect"] = summary["P_follow_exposure"] - summary["P_follow_no_exposure"]
+
+    return df, summary
