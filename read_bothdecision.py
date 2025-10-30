@@ -114,10 +114,10 @@ def load_decision_data(bbox=(-82.0, 26.48, -81.92, 26.52)):
     # -----------------------------
     # 8) Logging
     # -----------------------------
-    print(f"[INFO] households in bbox: {len(households_df)} "
-          f"(repair nodes: {repair['geohash8'].nunique()}, sales nodes: {sales['geohash8'].nunique()})")
-    print(f"[INFO] decision rows kept (valid timestamps): {len(decision_df)} "
-          f"(repair: {len(repair_dec)}, sales: {len(sales_dec)})")
+    # print(f"[INFO] households in bbox: {len(households_df)} "
+    #       f"(repair nodes: {repair['geohash8'].nunique()}, sales nodes: {sales['geohash8'].nunique()})")
+    # print(f"[INFO] decision rows kept (valid timestamps): {len(decision_df)} "
+    #       f"(repair: {len(repair_dec)}, sales: {len(sales_dec)})")
 
     return decision_df, households_df
 
@@ -128,7 +128,6 @@ def load_network_files(folder='social_network', bbox=(-82.0, 26.48, -81.92, 26.5
     network_dict = {}
 
     def _valid_gh8(s: str) -> bool:
-        # 只接受 8 位 [0-9b-hj-km-np-z]（geohash 不含 a i l o）
         if not isinstance(s, str): return False
         s = s.strip().lower()
         return len(s) == 8 and all(ch in "0123456789bcdefghjkmnpqrstuvwxyz" for ch in s)
@@ -186,33 +185,25 @@ def load_network_files(folder='social_network', bbox=(-82.0, 26.48, -81.92, 26.5
 
         df = df[['group_1', 'group_2', 'type']].reset_index(drop=True)
         network_dict[net_date] = df
-        print(f"[INFO] {f}: kept {len(df)} edges in bbox {bbox}")
+        nodes = set(df['group_1']).union(set(df['group_2']))
+        print(f"[INFO] {f}: kept {len(df)} edges, {len(nodes)} nodes in bbox")
 
     return network_dict
 
 
+import networkx as nx
+import numpy as np
+import pandas as pd
+
 def analyze_decision_network_strength(decision_df, households_df, network_dict, month_window=1):
     """
-    Compare network structural metrics between:
-      - households that made a decision in a given time window, and
+    For each monthly social network, compare network structure between:
+      - households that made a decision in a given time window
       - households that did NOT make a decision
-    using the household base table as the full population.
 
-    Inputs
-    -------
-    decision_df : DataFrame
-        Contains ['geohash8', 'decision_date', 'decision_type']
-    households_df : DataFrame
-        All households inside bbox, including those with no decision
-    network_dict : dict[datetime -> DataFrame]
-        Each value has columns ['group_1', 'group_2', 'type']
-    month_window : int
-        Number of months after `date` to define decision window
-
-    Returns
-    -------
-    result_df : DataFrame
-        Aggregated network metrics by group ('decided' / 'non_decided')
+    Added outputs:
+      - n_nodes, n_edges, avg_clustering
+      - removed avg_neighbor_degree
     """
 
     records = []
@@ -228,12 +219,11 @@ def analyze_decision_network_strength(decision_df, households_df, network_dict, 
         all_nodes = set(G.nodes())
 
         # ----------------------------
-        # Decide who made a decision in this window
+        # Decision window
         # ----------------------------
         month_start = pd.Timestamp(date)
         month_end = month_start + pd.DateOffset(months=month_window)
 
-        # households that made a decision within [date, date+window)
         decided_nodes = set(
             decision_df.loc[
                 (decision_df['decision_date'] >= month_start) &
@@ -242,47 +232,554 @@ def analyze_decision_network_strength(decision_df, households_df, network_dict, 
             ]
         )
 
-        # ensure nodes exist in household base
         all_households = set(households_df['geohash8'])
         decided_nodes = decided_nodes & all_households
-
-        # remaining households (non-deciders)
         non_decided_nodes = all_households - decided_nodes
 
         if not decided_nodes or not non_decided_nodes:
             continue
 
         # ----------------------------
-        # Compute network metrics
+        # Compute metrics
         # ----------------------------
         deg = dict(G.degree())
-        avg_neighbor_degree = nx.average_neighbor_degree(G)
         betw = nx.betweenness_centrality(G, normalized=True)
+        clustering = nx.clustering(G)
 
         def summarize(nodes, label):
-            # only consider nodes that exist in the graph
             sub_nodes = [n for n in nodes if n in deg]
             if not sub_nodes:
                 return None
+            subG = G.subgraph(sub_nodes)
             return {
                 'date': date,
                 'group': label,
-                'n_households': len(sub_nodes),
+                'n_nodes': len(sub_nodes),
+                'n_edges': subG.number_of_edges(),
                 'avg_degree': np.mean([deg[n] for n in sub_nodes]),
-                'avg_neighbor_degree': np.mean([avg_neighbor_degree[n] for n in sub_nodes]),
                 'avg_betweenness': np.mean([betw[n] for n in sub_nodes]),
-                'density': nx.density(G.subgraph(sub_nodes)) if len(sub_nodes) > 1 else 0
+                'avg_clustering': np.mean([clustering[n] for n in sub_nodes]),
+                'density': nx.density(subG) if len(sub_nodes) > 1 else 0
             }
 
-        records.append(summarize(decided_nodes, 'decided'))
-        records.append(summarize(non_decided_nodes, 'non_decided'))
+        rec_d = summarize(decided_nodes, 'decided')
+        rec_n = summarize(non_decided_nodes, 'non_decided')
+
+        if rec_d: records.append(rec_d)
+        if rec_n: records.append(rec_n)
+
+        # print monthly summary
+        print(f"{date.date()} | decided: {rec_d['n_nodes']} nodes, {rec_d['n_edges']} edges "
+              f"| non-decided: {rec_n['n_nodes']} nodes, {rec_n['n_edges']} edges")
 
     # ----------------------------
     # Combine results
     # ----------------------------
     result = pd.DataFrame([r for r in records if r])
     print(
-        result.groupby('group')[['avg_degree', 'avg_neighbor_degree',
-                                 'avg_betweenness', 'density']].mean()
+        result.groupby('group')[['avg_degree', 'avg_betweenness',
+                                 'avg_clustering', 'density']].mean()
     )
     return result
+
+
+
+def analyze_overall_decision_network(decision_df, households_df, network_dict):
+    """
+    Combine all monthly networks into a single large network
+    and compare structural metrics between decided and non-decided households.
+
+    Outputs:
+      - avg_degree
+      - avg_betweenness
+      - avg_clustering
+      - density
+      - n_nodes, n_edges (unique & weighted)
+    """
+
+    # -------------------------------------------------
+    # 1. Combine all monthly edges into one DataFrame
+    # -------------------------------------------------
+    all_edges = []
+    for date, df in network_dict.items():
+        if {'group_1','group_2'}.issubset(df.columns):
+            tmp = df[['group_1','group_2','type']].dropna(subset=['group_1','group_2']).copy()
+            def safe_sort(r):
+                g1, g2 = str(r['group_1']).strip(), str(r['group_2']).strip()
+                if not g1 or not g2 or g1 == 'nan' or g2 == 'nan':
+                    return pd.Series([None, None])
+                return pd.Series(sorted([g1, g2]))
+
+            tmp[['u','v']] = tmp.apply(safe_sort, axis=1)
+            tmp = tmp.dropna(subset=['u','v'])
+            all_edges.append(tmp)
+    if not all_edges:
+        raise ValueError("No valid network data found.")
+    all_edges = pd.concat(all_edges, ignore_index=True)
+
+    # aggregate duplicates into weighted edges
+    agg = (all_edges.groupby(['u','v','type'])
+                    .size().reset_index(name='weight'))
+
+    print(f"[INFO] Combined network edges: {len(all_edges)} rows, {len(agg)} unique pairs")
+
+    # -------------------------------------------------
+    # 2. Build full graph
+    # -------------------------------------------------
+    G = nx.Graph()
+    for _, r in agg.iterrows():
+        G.add_edge(r['u'], r['v'], type=r['type'], weight=int(r['weight']))
+
+    print(f"[INFO] Graph built: {G.number_of_nodes()} nodes, {G.number_of_edges()} unique edges")
+
+    # -------------------------------------------------
+    # 3. Decide who made decisions (across all months)
+    # -------------------------------------------------
+    decided_nodes = set(decision_df['geohash8'].dropna())
+    all_households = set(households_df['geohash8'].dropna())
+    decided_nodes = decided_nodes & all_households
+    non_decided_nodes = all_households - decided_nodes
+
+    print(f"[INFO] Decided households: {len(decided_nodes)}, Non-decided: {len(non_decided_nodes)}")
+
+    # -------------------------------------------------
+    # 4. Compute network metrics
+    # -------------------------------------------------
+    deg = dict(G.degree())
+    betw = nx.betweenness_centrality(G, normalized=True)
+    clustering = nx.clustering(G)
+
+    def summarize(nodes, label):
+        sub_nodes = [n for n in nodes if n in G]
+        if not sub_nodes:
+            return None
+        subG = G.subgraph(sub_nodes)
+        return {
+            'group': label,
+            'n_nodes': len(sub_nodes),
+            'n_edges_unique': subG.number_of_edges(),
+            'n_edges_weighted': sum(d.get('weight',1) for _,_,d in subG.edges(data=True)),
+            'avg_degree': np.mean([deg[n] for n in sub_nodes]),
+            'avg_betweenness': np.mean([betw[n] for n in sub_nodes]),
+            'avg_clustering': np.mean([clustering[n] for n in sub_nodes]),
+            'density': nx.density(subG) if len(sub_nodes) > 1 else 0.0
+        }
+
+    rec_d = summarize(decided_nodes, 'decided')
+    rec_n = summarize(non_decided_nodes, 'non_decided')
+
+    # -------------------------------------------------
+    # 5. Combine and output
+    # -------------------------------------------------
+    result = pd.DataFrame([r for r in [rec_d, rec_n] if r])
+    print("\n=== Overall Network Statistics ===")
+    print(result.set_index('group')[['n_nodes','n_edges_unique','avg_degree',
+                                    'avg_betweenness','avg_clustering','density']])
+    return result
+
+
+def analyze_overall_decision_network2(decision_df, households_df, network_dict):
+    import networkx as nx
+    import numpy as np
+    import pandas as pd
+    from networkx.algorithms.community.quality import modularity
+
+    all_edges = []
+
+    for date, df in network_dict.items():
+        if {'group_1','group_2'}.issubset(df.columns):
+            tmp = df[['group_1','group_2','type']].dropna(subset=['group_1','group_2']).copy()
+
+            u_list, v_list = [], []
+            for g1, g2 in zip(tmp['group_1'], tmp['group_2']):
+                g1, g2 = str(g1).strip(), str(g2).strip()
+                if not g1 or not g2 or g1 in ['nan', 'None'] or g2 in ['nan', 'None']:
+                    continue
+                u, v = sorted([g1, g2])
+                u_list.append(u)
+                v_list.append(v)
+
+            tmp = tmp.iloc[:len(u_list)].copy()
+            tmp['u'] = u_list
+            tmp['v'] = v_list
+            all_edges.append(tmp)
+
+    if not all_edges:
+        raise ValueError("No valid network edges found.")
+    all_edges = pd.concat(all_edges, ignore_index=True)
+
+    # ---- aggregate duplicates into weighted edges ----
+    agg = (
+        all_edges.groupby(['u','v','type'])
+        .size()
+        .reset_index(name='weight')
+    )
+
+    print(f"[INFO] Combined edges: {len(all_edges)}, unique pairs: {len(agg)}")
+
+    # ---- build full graph ----
+    G = nx.Graph()
+    for _, r in agg.iterrows():
+        G.add_edge(r['u'], r['v'], type=r['type'], weight=int(r['weight']))
+    print(f"[INFO] Graph built: {G.number_of_nodes()} nodes, {G.number_of_edges()} unique edges")
+
+    # ---- determine deciders ----
+    decided = set(decision_df['geohash8'].dropna())
+    all_hh = set(households_df['geohash8'].dropna())
+    decided = decided & all_hh
+    non_decided = all_hh - decided
+    print(f"[INFO] Decided: {len(decided)}, Non-decided: {len(non_decided)}")
+
+    # ---- metrics ----
+    deg = dict(G.degree())
+    betw = nx.betweenness_centrality(G, normalized=True)
+    cluster = nx.clustering(G)
+
+    def summarize(nodes, label):
+        valid = [n for n in nodes if n in G]
+        if not valid:
+            return None
+        subG = G.subgraph(valid)
+        # modularity needs a partition list of sets
+        # partition = [set(valid), set(G.nodes()) - set(valid)]
+        # mod = modularity(G, partition, weight='weight')
+        return {
+            'group': label,
+            'n_nodes': len(valid),
+            'n_edges_unique': subG.number_of_edges(),
+            'n_edges_weighted': sum(d.get('weight',1) for _,_,d in subG.edges(data=True)),
+            'avg_degree': np.mean([deg[n] for n in valid]),
+            'avg_betweenness': np.mean([betw[n] for n in valid]),
+            'avg_clustering': np.mean([cluster[n] for n in valid]),
+            'density': nx.density(subG) if len(valid) > 1 else 0.0,
+            # 'modularity': mod
+        }
+
+    rec_d = summarize(decided, 'decided')
+    rec_n = summarize(non_decided, 'non_decided')
+
+    result = pd.DataFrame([r for r in [rec_d, rec_n] if r])
+    print(result.set_index('group')[['n_nodes','n_edges_unique','avg_degree',
+                                    'avg_betweenness','avg_clustering','density']])
+    return result
+
+
+
+def summarize_decider_contrast(decision_df, households_df, network_dict):
+    import networkx as nx
+    import numpy as np
+    import pandas as pd
+
+    # ---------- 1. Merge all edges ----------
+    all_edges = []
+    for _, df in network_dict.items():
+        if {'group_1','group_2'}.issubset(df.columns):
+            tmp = df[['group_1','group_2']].dropna().copy()
+            tmp['u'] = tmp.apply(lambda r: min(str(r['group_1']).strip(), str(r['group_2']).strip()), axis=1)
+            tmp['v'] = tmp.apply(lambda r: max(str(r['group_1']).strip(), str(r['group_2']).strip()), axis=1)
+            tmp = tmp[(tmp['u']!='') & (tmp['v']!='') & (tmp['u']!='nan') & (tmp['v']!='nan')]
+            all_edges.append(tmp[['u','v']])
+    if not all_edges:
+        raise ValueError("No edges found.")
+    all_edges = pd.concat(all_edges, ignore_index=True)
+    agg = all_edges.value_counts(['u','v']).reset_index(name='weight')
+
+    G = nx.Graph()
+    for _, r in agg.iterrows():
+        G.add_edge(r['u'], r['v'], weight=int(r['weight']))
+
+    # ---------- 2. Label decided ----------
+    all_hh = set(households_df['geohash8'].dropna().astype(str))
+    decided = set(decision_df['geohash8'].dropna().astype(str)) & all_hh
+    for n in G.nodes():
+        G.nodes[n]['decided'] = 1 if n in decided else 0
+
+    # ---------- 3. Node-level metrics ----------
+    deg = dict(G.degree())
+    clustering = nx.clustering(G)
+    try:
+        core = nx.core_number(G)
+    except Exception:
+        core = {n: 0 for n in G.nodes()}
+    pr = nx.pagerank(G, alpha=0.85)
+
+    neighbor_decided_frac = {}
+    for n in G.nodes():
+        nbrs = list(G.neighbors(n))
+        if not nbrs:
+            neighbor_decided_frac[n] = 0.0
+        else:
+            neighbor_decided_frac[n] = np.mean([G.nodes[v]['decided'] for v in nbrs])
+
+    per_node = pd.DataFrame({
+        'node': list(G.nodes()),
+        'decided': [G.nodes[n]['decided'] for n in G.nodes()],
+        'degree': [deg[n] for n in G.nodes()],
+        'clustering': [clustering.get(n,0.0) for n in G.nodes()],
+        'kcore': [core.get(n,0) for n in G.nodes()],
+        'pagerank': [pr.get(n,0.0) for n in G.nodes()],
+        'neighbor_decided_frac': [neighbor_decided_frac[n] for n in G.nodes()],
+    })
+
+    # ---------- 4. Group summaries ----------
+    def agg_block(df, label):
+        nodes = list(df['node'])
+        subG = G.subgraph(nodes)
+        return pd.Series({
+            'n_nodes': len(nodes),
+            'n_edges': subG.number_of_edges(),
+            'degree_mean': df['degree'].mean(),
+            'degree_median': df['degree'].median(),
+            'clust_mean': df['clustering'].mean(),
+            'kcore_mean': df['kcore'].mean(),
+            'pagerank_mean': df['pagerank'].mean(),
+            'nbr_decided_frac_mean': df['neighbor_decided_frac'].mean(),
+        })
+
+    summary = []
+    for label, group_df in per_node.groupby(per_node['decided'].map({0:'non_decided',1:'decided'})):
+        summary.append(agg_block(group_df, label))
+    summary = pd.DataFrame(summary, index=['decided','non_decided'])
+
+    # ---------- 5. Global metrics ----------
+    edges = list(G.edges())
+    E = sum((G.nodes[u]['decided'] != G.nodes[v]['decided']) for u,v in edges)
+    I = len(edges) - E
+    cross_share = E / len(edges) if edges else 0.0
+    EI_index = (E - I) / (E + I) if (E + I) > 0 else np.nan
+
+    try:
+        mixing_matrix = nx.attribute_mixing_matrix(G, 'decided', normalized=True)
+    except Exception:
+        mixing_matrix = np.nan
+    try:
+        assort = nx.attribute_assortativity_coefficient(G, 'decided')
+    except Exception:
+        assort = np.nan
+
+    globals_ = {
+        'total_edges': G.number_of_edges(),
+        'cross_edge_share': cross_share,
+        'EI_index': EI_index,
+        'mixing_matrix': mixing_matrix,
+        'assortativity_decided': assort
+    }
+
+    # ---------- 6. Pretty print ----------
+    print("Globals:")
+    print(f"  Total edges (whole network): {G.number_of_edges()}")
+    print(f"  Cross-edge share: {cross_share:.3f}")
+    print(f"  E–I Index: {EI_index:.3f}")
+    print(f"\n  Mixing matrix (rows/cols = non_decided[0], decided[1]):\n")
+    print(pd.DataFrame(
+        mixing_matrix,
+        index=["from non-decided", "from decided"],
+        columns=["to non-decided", "to decided"]
+    ).applymap(lambda x: f"{x:.3f}"))
+
+    print("\nSummary by group:\n", summary)
+    return per_node, summary.reset_index().rename(columns={'index':'group'}), globals_
+
+
+def summarize_decider_contrast_by_month(decision_df, households_df, network_dict):
+    """
+    For each month in network_dict:
+      - Build that month's social network
+      - Compute decider vs non-decider contrast metrics
+      - Print full summary (globals + group stats)
+    """
+
+    import networkx as nx
+    import numpy as np
+    import pandas as pd
+
+    for date, df in network_dict.items():
+        print(f"\n===============================")
+        print(f"Month: {date}")
+        print(f"===============================")
+
+        # ---------- 1. Build graph ----------
+        if not {'group_1', 'group_2'}.issubset(df.columns):
+            print(f"[WARN] Missing columns in {date}")
+            continue
+
+        tmp = df[['group_1', 'group_2']].dropna().copy()
+        tmp['u'] = tmp.apply(lambda r: min(str(r['group_1']).strip(), str(r['group_2']).strip()), axis=1)
+        tmp['v'] = tmp.apply(lambda r: max(str(r['group_1']).strip(), str(r['group_2']).strip()), axis=1)
+        tmp = tmp[(tmp['u']!='') & (tmp['v']!='') & (tmp['u']!='nan') & (tmp['v']!='nan')]
+
+        if tmp.empty:
+            print(f"[INFO] No valid edges for {date}")
+            continue
+
+        agg = tmp.value_counts(['u', 'v']).reset_index(name='weight')
+
+        G = nx.Graph()
+        for _, r in agg.iterrows():
+            G.add_edge(r['u'], r['v'], weight=int(r['weight']))
+
+        # ---------- 2. Label decided ----------
+        all_hh = set(households_df['geohash8'].dropna().astype(str))
+        decided = set(decision_df['geohash8'].dropna().astype(str)) & all_hh
+        for n in G.nodes():
+            G.nodes[n]['decided'] = 1 if n in decided else 0
+
+        # ---------- 3. Node-level metrics ----------
+        deg = dict(G.degree())
+        clustering = nx.clustering(G)
+        try:
+            core = nx.core_number(G)
+        except Exception:
+            core = {n: 0 for n in G.nodes()}
+        pr = nx.pagerank(G, alpha=0.85)
+
+        neighbor_decided_frac = {}
+        for n in G.nodes():
+            nbrs = list(G.neighbors(n))
+            if not nbrs:
+                neighbor_decided_frac[n] = 0.0
+            else:
+                neighbor_decided_frac[n] = np.mean([G.nodes[v]['decided'] for v in nbrs])
+
+        per_node = pd.DataFrame({
+            'node': list(G.nodes()),
+            'decided': [G.nodes[n]['decided'] for n in G.nodes()],
+            'degree': [deg[n] for n in G.nodes()],
+            'clustering': [clustering.get(n,0.0) for n in G.nodes()],
+            'kcore': [core.get(n,0) for n in G.nodes()],
+            'pagerank': [pr.get(n,0.0) for n in G.nodes()],
+            'neighbor_decided_frac': [neighbor_decided_frac[n] for n in G.nodes()],
+        })
+
+        # ---------- 4. Group summaries ----------
+        def agg_block(df, label):
+            nodes = list(df['node'])
+            subG = G.subgraph(nodes)
+            return pd.Series({
+                'n_nodes': len(nodes),
+                'n_edges': subG.number_of_edges(),
+                'degree_mean': df['degree'].mean(),
+                'degree_median': df['degree'].median(),
+                'clust_mean': df['clustering'].mean(),
+                'kcore_mean': df['kcore'].mean(),
+                'pagerank_mean': df['pagerank'].mean(),
+                'nbr_decided_frac_mean': df['neighbor_decided_frac'].mean(),
+            })
+
+        summary = []
+        for label, group_df in per_node.groupby(per_node['decided'].map({0:'non_decided',1:'decided'})):
+            summary.append(agg_block(group_df, label))
+        summary = pd.DataFrame(summary, index=['decided','non_decided'])
+
+        # ---------- 5. Global metrics ----------
+        edges = list(G.edges())
+        E = sum((G.nodes[u]['decided'] != G.nodes[v]['decided']) for u,v in edges)
+        I = len(edges) - E
+        cross_share = E / len(edges) if edges else 0.0
+        EI_index = (E - I) / (E + I) if (E + I) > 0 else np.nan
+
+        try:
+            mixing_matrix = nx.attribute_mixing_matrix(G, 'decided', normalized=True)
+        except Exception:
+            mixing_matrix = np.nan
+        try:
+            assort = nx.attribute_assortativity_coefficient(G, 'decided')
+        except Exception:
+            assort = np.nan
+
+        # ---------- 6. Print results ----------
+        print("Globals:")
+        print(f"  Cross-edge share: {cross_share:.3f}")
+        print(f"  E–I Index: {EI_index:.3f}")
+        print(f"\n  Mixing matrix (rows/cols = non_decided[0], decided[1]):\n")
+        print(pd.DataFrame(
+            mixing_matrix,
+            index=["from non-decided", "from decided"],
+            columns=["to non-decided", "to decided"]
+        ).applymap(lambda x: f"{x:.3f}"))
+
+        print("\nSummary by group:\n", summary)
+
+
+def analyze_overall_decision_network2_by_month(decision_df, households_df, network_dict):
+    import networkx as nx
+    import numpy as np
+    import pandas as pd
+    from networkx.algorithms.community.quality import modularity
+
+    for date, df in network_dict.items():
+        print(f"\n===============================")
+        print(f"Month: {date}")
+        print(f"===============================")
+
+        # ---- clean edges ----
+        if not {'group_1', 'group_2'}.issubset(df.columns):
+            print(f"[WARN] Missing columns in {date}")
+            continue
+
+        tmp = df[['group_1', 'group_2', 'type']].dropna(subset=['group_1', 'group_2']).copy()
+        u_list, v_list = [], []
+        for g1, g2 in zip(tmp['group_1'], tmp['group_2']):
+            g1, g2 = str(g1).strip(), str(g2).strip()
+            if not g1 or not g2 or g1 in ['nan', 'None'] or g2 in ['nan', 'None']:
+                continue
+            u, v = sorted([g1, g2])
+            u_list.append(u)
+            v_list.append(v)
+
+        if not u_list:
+            print(f"[INFO] No valid edges for {date}")
+            continue
+
+        tmp = tmp.iloc[:len(u_list)].copy()
+        tmp['u'], tmp['v'] = u_list, v_list
+
+        # ---- aggregate duplicates into weighted edges ----
+        agg = tmp.groupby(['u', 'v', 'type']).size().reset_index(name='weight')
+
+        # ---- build monthly graph ----
+        G = nx.Graph()
+        for _, r in agg.iterrows():
+            G.add_edge(r['u'], r['v'], type=r['type'], weight=int(r['weight']))
+
+        print(f"[INFO] Graph built: {G.number_of_nodes()} nodes, {G.number_of_edges()} unique edges")
+
+        # ---- determine deciders ----
+        decided = set(decision_df['geohash8'].dropna()) & set(households_df['geohash8'].dropna())
+        non_decided = set(households_df['geohash8'].dropna()) - decided
+        print(f"[INFO] Decided: {len(decided)}, Non-decided: {len(non_decided)}")
+
+        # ---- metrics ----
+        deg = dict(G.degree())
+        betw = nx.betweenness_centrality(G, normalized=True)
+        cluster = nx.clustering(G)
+
+        def summarize(nodes, label):
+            valid = [n for n in nodes if n in G]
+            if not valid:
+                return None
+            subG = G.subgraph(valid)
+            partition = [set(valid), set(G.nodes()) - set(valid)]
+            try:
+                mod = modularity(G, partition, weight='weight')
+            except Exception:
+                mod = np.nan
+            return {
+                'group': label,
+                'n_nodes': len(valid),
+                'n_edges_unique': subG.number_of_edges(),
+                'n_edges_weighted': sum(d.get('weight', 1) for _, _, d in subG.edges(data=True)),
+                'avg_degree': np.mean([deg[n] for n in valid]),
+                'avg_betweenness': np.mean([betw[n] for n in valid]),
+                'avg_clustering': np.mean([cluster[n] for n in valid]),
+                'density': nx.density(subG) if len(valid) > 1 else 0.0,
+            }
+
+        rec_d = summarize(decided, 'decided')
+        rec_n = summarize(non_decided, 'non_decided')
+
+        result = pd.DataFrame([r for r in [rec_d, rec_n] if r])
+        print(result.set_index('group')[[
+            'n_nodes', 'n_edges_unique', 'avg_degree',
+            'avg_betweenness', 'avg_clustering', 'density'
+        ]])

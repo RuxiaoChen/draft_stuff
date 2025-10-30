@@ -8,7 +8,7 @@ import pdb
 
 
 
-def identify_group_locations(df, min_appearances=20, night_start_hour=23, night_end_hour=5,
+def identify_group_locations(df, min_appearances=10, night_start_hour=23, night_end_hour=5,
                              min_group_visits=5, location_precision=4, w1=0.6, w2=0.4):
     """
     Identify each device's main residence/group location using both *_1 and *_2 data.
@@ -129,12 +129,17 @@ def identify_group_locations(df, min_appearances=20, night_start_hour=23, night_
 
 
 
-def user_group_links(start_date, linked_df):
-    result_df_with_groups = identify_group_locations(linked_df)
+def user_group_links(start_date, linked_df, min_appear=10):
+    result_df_with_groups = identify_group_locations(linked_df,min_appearances=min_appear)
     # Assume your DataFrame is named result_df_with_groups
-    # It contains the following columns:
     # device_id, linked_trip_id, latitude, longitude, timestamp, group_latitude, group_longitude
-
+    
+    # 1. Drop rows with invalid group coordinates
+    result_df_with_groups = result_df_with_groups[
+        result_df_with_groups["group_latitude"].notna() &
+        result_df_with_groups["group_longitude"].notna()
+    ].copy()
+    
     # 1. Encode group_latitude and group_longitude into a 9-character Geohash
     result_df_with_groups["group_geohash_8"] = result_df_with_groups.apply(
         lambda row: geohash.encode(row["group_latitude"], row["group_longitude"], precision=8),

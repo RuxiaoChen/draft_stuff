@@ -211,7 +211,7 @@ def dtw_compute(result_df_with_groups,start_time, end_time, min_trj_len = 20):
 
 
     # 20% of the data will be positive
-    desired_ratio=0.2
+    desired_ratio=0.3
     # Sort the cost value
     sorted_costs = np.sort(all_costs)
     # Calculate place of the desired threshold
